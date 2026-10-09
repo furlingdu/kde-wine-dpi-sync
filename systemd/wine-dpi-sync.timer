@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically sync Wine DPI with the KDE display scale
+
+[Timer]
+OnStartupSec=20s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=wine-dpi-sync.service
+
+[Install]
+WantedBy=timers.target

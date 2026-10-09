@@ -1,0 +1,8 @@
+[Unit]
+Description=Sync Wine DPI with the KDE display scale
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/sleep 2
+ExecStart=%h/.local/bin/wine-dpi-sync

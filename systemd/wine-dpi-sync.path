@@ -1,0 +1,9 @@
+[Unit]
+Description=Sync Wine DPI when the KDE display configuration changes
+
+[Path]
+PathChanged=%h/.config/kwinoutputconfig.json
+Unit=wine-dpi-sync.service
+
+[Install]
+WantedBy=paths.target

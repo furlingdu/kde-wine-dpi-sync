@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+HOME_DIR=${HOME:?}
+DEFAULT_PREFIX="$HOME_DIR/.wine"
+CONF="$HOME_DIR/.config/wine-dpi-sync.conf"
+STATUS_ONLY=0
+[ "${1:-}" = "--status" ] && STATUS_ONLY=1
+
+get_scale() {
+    local scale=""
+
+    if command -v kscreen-doctor >/dev/null 2>&1; then
+        if command -v jq >/dev/null 2>&1; then
+            scale=$(kscreen-doctor -j 2>/dev/null | jq -r '
+                [ .outputs[] | select(.enabled == true) ] as $o
+                | if ($o | length) == 0 then empty
+                  else ( ($o | map(select(.priority == 1)) | first) // ($o | max_by(.scale)) ).scale
+                  end' 2>/dev/null)
+        fi
+        if [ -z "${scale:-}" ]; then
+            scale=$(kscreen-doctor -o 2>/dev/null \
+                    | sed 's/\x1b\[[0-9;]*m//g' \
+                    | awk '/^[[:space:]]*Scale:/ { print $2 }' \
+                    | sort -g | tail -1)
+        fi
+    fi
+
+    printf '%s' "${scale:-}"
+}
+
+get_dpi() {
+    local dpi="" scale=""
+
+    if command -v xrdb >/dev/null 2>&1; then
+        dpi=$(xrdb -query 2>/dev/null | awk '/^Xft\.dpi:[[:space:]]/ { print $2; exit }')
+    fi
+    case "$dpi" in
+        ''|*[!0-9.]*) dpi="" ;;
+    esac
+
+    if [ -z "$dpi" ]; then
+        scale=$(get_scale)
+        if [ -n "$scale" ]; then
+            dpi=$(awk -v s="$scale" 'BEGIN { n = int(s); if (n < s) n += 1; printf "%d", n * 96 }')
+        fi
+    fi
+
+    printf '%s' "$dpi"
+}
+
+prefixes=( "$DEFAULT_PREFIX" )
+if [ -f "$CONF" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=${line%%#*}
+        line=$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        [ -n "$line" ] && prefixes+=( "${line/#\~/$HOME_DIR}" )
+    done < "$CONF"
+fi
+
+read_logpixels_hex() {
+    [ -f "$1/user.reg" ] || return 0
+    awk '/^\[/ { insec = (index($0, "[Control Panel\\\\Desktop]") == 1) }
+         insec && /^"LogPixels"=dword:/ { v = $0; sub(/^"LogPixels"=dword:/, "", v); print v; exit }' \
+        "$1/user.reg"
+}
+
+scale=$(get_scale)
+dpi=$(get_dpi)
+if [ -z "$dpi" ]; then
+    echo "wine-dpi-sync: no desktop DPI found, skipping"
+    exit 0
+fi
+
+dpi=$(awk -v d="$dpi" 'BEGIN { D = int(d + 0.5); if (D < 48) D = 48; if (D > 384) D = 384; printf "%d", D }')
+target_hex=$(printf '%08x' "$dpi")
+
+changed=0
+for prefix in "${prefixes[@]}"; do
+    if [ ! -d "$prefix" ]; then
+        [ "$STATUS_ONLY" = 1 ] && echo "missing prefix: $prefix"
+        continue
+    fi
+
+    current_hex=$(read_logpixels_hex "$prefix")
+    printf '%s: desktop DPI %s, KDE scale %s, target LogPixels %s, current %s\n' \
+        "$prefix" "$dpi" "${scale:-unknown}" "$target_hex" "${current_hex:-unset}"
+
+    [ "$STATUS_ONLY" = 1 ] && continue
+    [ "$current_hex" = "$target_hex" ] && continue
+
+    if WINEPREFIX="$prefix" wine reg add 'HKCU\Control Panel\Desktop' \
+            /v LogPixels /t REG_DWORD /d "$dpi" /f >/dev/null 2>&1; then
+        echo "synced: $prefix -> LogPixels=$dpi"
+        changed=1
+    else
+        echo "failed to write: $prefix" >&2
+    fi
+done
+
+if [ "$changed" = 1 ] && [ "$STATUS_ONLY" = 0 ] && command -v notify-send >/dev/null 2>&1; then
+    notify-send -a 'Wine DPI Sync' -i wine \
+        "Wine DPI synced to ${dpi}" \
+        "KDE scale ${scale:-unknown}. Restart Windows programs to apply."
+fi
+
+exit 0
